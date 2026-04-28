@@ -141,6 +141,17 @@ div[data-testid="stButton"] > button {
     font-weight: 700 !important;
     font-family: 'DM Sans', sans-serif !important;
 }
+
+/* Tiny calendar tap buttons */
+[data-testid="stButton"] button[kind="secondary"] {
+    padding: 0px 2px !important;
+    min-height: 0px !important;
+    height: 20px !important;
+    font-size: 9px !important;
+    line-height: 1 !important;
+    border-radius: 4px !important;
+}
+
 #MainMenu, footer, header { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
@@ -306,35 +317,34 @@ if screen == "calendar":
 
                     if is_today:
                         st.markdown(
-                            f"<div style='background:#3080e0;color:#fff;border-radius:8px;"
-                            f"padding:4px;text-align:center;font-weight:800;font-size:13px'>{day}</div>",
+                            f"<div style='background:#3080e0;color:#fff;border-radius:6px;"
+                            f"padding:2px 1px;text-align:center;font-weight:800;font-size:11px'>{day}</div>",
                             unsafe_allow_html=True
                         )
                     elif is_sel:
                         st.markdown(
-                            f"<div style='background:#e8f0ff;border:2px solid #3080e0;border-radius:8px;"
-                            f"padding:4px;text-align:center;font-weight:700;font-size:13px'>{day}</div>",
+                            f"<div style='background:#e8f0ff;border:2px solid #3080e0;border-radius:6px;"
+                            f"padding:2px 1px;text-align:center;font-weight:700;font-size:11px'>{day}</div>",
                             unsafe_allow_html=True
                         )
                     else:
                         st.markdown(
-                            f"<div style='text-align:center;font-size:13px;padding:4px'>{day}</div>",
+                            f"<div style='text-align:center;font-size:11px;padding:2px 1px'>{day}</div>",
                             unsafe_allow_html=True
                         )
 
-                    # Category dots — use helper functions, no backslashes in f-string
+                    # Category dots
                     if tasks_on:
                         dot_parts = []
                         for c in cats[:3]:
                             bg = get_bg(c)
                             dot_parts.append(
-                                f"<span style='display:inline-block;width:7px;height:7px;"
-                                f"border-radius:50%;background:{bg};margin:1px;"
-                                f"border:1px solid rgba(0,0,0,0.1)'></span>"
+                                f"<span style='display:inline-block;width:5px;height:5px;"
+                                f"border-radius:50%;background:{bg};margin:1px;'></span>"
                             )
                         st.markdown(f"<center>{''.join(dot_parts)}</center>", unsafe_allow_html=True)
 
-                    if st.button("👁", key=f"cal_{ds}", use_container_width=True):
+                    if st.button("·", key=f"cal_{ds}", use_container_width=True):
                         st.session_state.selected_date = None if is_sel else ds
                         st.rerun()
 
@@ -368,9 +378,11 @@ if screen == "calendar":
                     unsafe_allow_html=True
                 )
         st.markdown("</div>", unsafe_allow_html=True)
-        if st.button("✖ Close", use_container_width=True):
-            st.session_state.selected_date = None
-            st.rerun()
+        c_close, _ = st.columns([1, 4])
+        with c_close:
+            if st.button("✖ Close", key="close_day"):
+                st.session_state.selected_date = None
+                st.rerun()
 
     # Legend
     st.markdown(
