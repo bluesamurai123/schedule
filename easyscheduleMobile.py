@@ -1,8 +1,20 @@
 import streamlit as st
-import json, os, hashlib, calendar
+import json, hashlib, calendar
 from datetime import date, datetime
+from supabase import create_client, Client
 
 st.set_page_config(page_title="Easy Schedule", page_icon="📅", layout="centered")
+
+# ─────────────────────────────────────────
+# SUPABASE CONNECTION
+# ─────────────────────────────────────────
+@st.cache_resource
+def get_supabase() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+sb = get_supabase()
 
 # ─────────────────────────────────────────
 # CATEGORY CONFIG
@@ -28,23 +40,42 @@ MEDALS = ["🥇", "🥈", "🥉"]
 def hash_pw(pw):
     return hashlib.sha256(pw.encode()).hexdigest()
 
-USERS_FILE = "users.json"
-
 def load_users():
-    return json.load(open(USERS_FILE)) if os.path.exists(USERS_FILE) else {}
+    try:
+        res = sb.table("users").select("username, password").execute()
+        return {r["username"]: r["password"] for r in res.data}
+    except:
+        return {}
 
-def save_users(u):
-    json.dump(u, open(USERS_FILE, "w"), indent=2)
+def save_user(username, hashed_pw):
+    try:
+        sb.table("users").upsert({"username": username, "password": hashed_pw}).execute()
+    except Exception as e:
+        st.error(f"Could not save user: {e}")
 
 def load_data(user):
-    f = f"tasks_{user}.json"
-    return json.load(open(f)) if os.path.exists(f) else {
+    try:
+        res = sb.table("schedules").select("data").eq("username", user).execute()
+        if res.data:
+            d = res.data[0]["data"]
+            if isinstance(d, str):
+                d = json.loads(d)
+            return d
+    except:
+        pass
+    return {
         "people": {}, "task_history": [],
         "archived_points": {}, "all_time_points": {}, "last_reset": ""
     }
 
 def save_data(user, d):
-    json.dump(d, open(f"tasks_{user}.json", "w"), indent=2)
+    try:
+        sb.table("schedules").upsert({
+            "username": user,
+            "data": d
+        }).execute()
+    except Exception as e:
+        st.error(f"Could not save: {e}")
 
 def get_bg(cat):
     return CAT_COLORS.get(cat, {"bg": "#ccc", "text": "#333"})["bg"]
@@ -176,8 +207,7 @@ if not st.session_state.user:
             elif u in users:
                 st.error("Username taken")
             else:
-                users[u] = hash_pw(p)
-                save_users(users)
+                save_user(u, hash_pw(p))
                 st.success("Account created! Log in.")
 
     if mode == "Login":
@@ -271,124 +301,148 @@ people = list(data["people"].keys())
 # 📅 CALENDAR
 # ─────────────────────────────────────────
 if screen == "calendar":
-    st.markdown("<div class='stitle'>📅 Calendar</div>", unsafe_allow_html=True)
 
-    n1, n2, n3 = st.columns([1, 3, 1])
+    yr  = st.session_state.cal_year
+    mo  = st.session_state.cal_month
+    sel = st.session_state.selected_date or ""
+
+    # ── Month navigation ──
+    n1, n2, n3 = st.columns([1, 4, 1])
     with n1:
-        if st.button("◀", use_container_width=True):
-            if st.session_state.cal_month == 1:
+        if st.button("◀", use_container_width=True, key="cal_prev"):
+            if mo == 1:
                 st.session_state.cal_month = 12
                 st.session_state.cal_year -= 1
             else:
                 st.session_state.cal_month -= 1
+            st.session_state.selected_date = None
             st.rerun()
     with n2:
-        mn = datetime(st.session_state.cal_year, st.session_state.cal_month, 1).strftime("%B %Y")
-        st.markdown(f"<h3 style='text-align:center;margin:0;font-weight:800;color:#1a1a2e'>{mn}</h3>", unsafe_allow_html=True)
+        mn = datetime(yr, mo, 1).strftime("%B %Y")
+        st.markdown(
+            f"<div style='text-align:center;font-weight:900;font-size:18px;color:#1a1a2e;padding:6px 0'>{mn}</div>",
+            unsafe_allow_html=True
+        )
     with n3:
-        if st.button("▶", use_container_width=True):
-            if st.session_state.cal_month == 12:
+        if st.button("▶", use_container_width=True, key="cal_next"):
+            if mo == 12:
                 st.session_state.cal_month = 1
                 st.session_state.cal_year += 1
             else:
                 st.session_state.cal_month += 1
+            st.session_state.selected_date = None
             st.rerun()
 
-    # Day headers
-    day_cols = st.columns(7)
-    for i, dn in enumerate(["Mo","Tu","We","Th","Fr","Sa","Su"]):
-        day_cols[i].markdown(f"<center style='font-size:11px;font-weight:700;color:#aaa'>{dn}</center>", unsafe_allow_html=True)
+    # ── Build calendar grid as pure HTML (display only, no clicks) ──
+    days_in_month = calendar.monthrange(yr, mo)[1]
+    first_weekday = calendar.monthrange(yr, mo)[0]
 
-    # Calendar grid
-    cal = calendar.monthcalendar(st.session_state.cal_year, st.session_state.cal_month)
-    for week in cal:
-        cols = st.columns(7)
-        for i, day in enumerate(week):
-            with cols[i]:
-                if day == 0:
-                    st.markdown(" ")
-                else:
-                    day_date = date(st.session_state.cal_year, st.session_state.cal_month, day)
-                    ds       = str(day_date)
-                    is_today = day_date == today
-                    is_sel   = ds == st.session_state.selected_date
-                    tasks_on = ct.get(ds, [])
-                    cats     = list(dict.fromkeys(t["category"] for t in tasks_on))
+    cells_html = ""
+    for _ in range(first_weekday):
+        cells_html += "<div></div>"
 
-                    if is_today:
-                        st.markdown(
-                            f"<div style='background:#3080e0;color:#fff;border-radius:6px;"
-                            f"padding:2px 1px;text-align:center;font-weight:800;font-size:11px'>{day}</div>",
-                            unsafe_allow_html=True
-                        )
-                    elif is_sel:
-                        st.markdown(
-                            f"<div style='background:#e8f0ff;border:2px solid #3080e0;border-radius:6px;"
-                            f"padding:2px 1px;text-align:center;font-weight:700;font-size:11px'>{day}</div>",
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.markdown(
-                            f"<div style='text-align:center;font-size:11px;padding:2px 1px'>{day}</div>",
-                            unsafe_allow_html=True
-                        )
+    for day in range(1, days_in_month + 1):
+        ds = f"{yr}-{mo:02d}-{day:02d}"
+        is_today = ds == ts
+        is_sel   = ds == sel
+        day_tasks = ct.get(ds, [])
+        cats = list(dict.fromkeys(t["category"] for t in day_tasks))
 
-                    # Category dots
-                    if tasks_on:
-                        dot_parts = []
-                        for c in cats[:3]:
-                            bg = get_bg(c)
-                            dot_parts.append(
-                                f"<span style='display:inline-block;width:5px;height:5px;"
-                                f"border-radius:50%;background:{bg};margin:1px;'></span>"
-                            )
-                        st.markdown(f"<center>{''.join(dot_parts)}</center>", unsafe_allow_html=True)
+        dots = ""
+        for c in cats[:3]:
+            bg = get_bg(c)
+            dots += f"<span style='display:inline-block;width:6px;height:6px;border-radius:50%;background:{bg};margin:0 1px'></span>"
 
-                    if st.button("·", key=f"cal_{ds}", use_container_width=True):
-                        st.session_state.selected_date = None if is_sel else ds
-                        st.rerun()
+        if is_today:
+            num_style = "background:#3080e0;color:#fff;font-weight:800;"
+        elif is_sel:
+            num_style = "background:#e8f0ff;color:#3080e0;font-weight:800;outline:2px solid #3080e0;"
+        else:
+            num_style = "color:#1a1a2e;font-weight:600;"
 
-    # Selected day detail
-    if st.session_state.selected_date:
-        sel      = st.session_state.selected_date
-        sel_disp = datetime.strptime(sel, "%Y-%m-%d").strftime("%A, %B %d %Y")
-        entries  = sorted(ct.get(sel, []), key=lambda x: x.get("time", ""))
+        cells_html += (
+            f"<div style='display:flex;flex-direction:column;align-items:center;padding:3px 1px'>"
+            f"<div style='width:32px;height:32px;border-radius:50%;display:flex;align-items:center;"
+            f"justify-content:center;font-size:14px;{num_style}'>{day}</div>"
+            f"<div style='display:flex;justify-content:center;margin-top:2px;min-height:8px'>{dots}</div>"
+            f"</div>"
+        )
+
+    header_cells = "".join(
+        f"<div style='text-align:center;font-size:11px;font-weight:700;color:#aaa;padding:4px 0'>{d}</div>"
+        for d in ["Mo","Tu","We","Th","Fr","Sa","Su"]
+    )
+
+    cal_html = (
+        f"<div style='background:#fff;border-radius:16px;padding:8px 4px'>"
+        f"<div style='display:grid;grid-template-columns:repeat(7,1fr);margin-bottom:4px'>{header_cells}</div>"
+        f"<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:1px'>{cells_html}</div>"
+        f"</div>"
+    )
+    st.markdown(cal_html, unsafe_allow_html=True)
+
+    # ── Day picker — native Streamlit, no logout bug ──
+    st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+    pick_col, clear_col = st.columns([4, 1])
+    with pick_col:
+        picked = st.date_input(
+            "Select a day",
+            value=date.fromisoformat(sel) if sel else today,
+            label_visibility="collapsed"
+        )
+        picked_str = str(picked)
+        if picked_str != sel:
+            st.session_state.selected_date = picked_str
+            st.rerun()
+    with clear_col:
+        if st.button("✖", key="clear_sel"):
+            st.session_state.selected_date = None
+            st.rerun()
+
+    # ── Selected day detail ──
+    if sel:
+        try:
+            sel_disp = datetime.strptime(sel, "%Y-%m-%d").strftime("%A, %B %d")
+        except:
+            sel_disp = sel
+        entries = sorted(ct.get(sel, []), key=lambda x: x.get("time", ""))
 
         st.markdown(
-            f"<div class='scard'><div style='font-weight:800;font-size:15px;margin-bottom:8px'>"
-            f"📋 {sel_disp}</div>",
+            f"<div style='background:#fff;border-radius:14px;padding:12px;"
+            f"box-shadow:0 2px 8px rgba(0,0,0,0.07);margin-top:6px'>"
+            f"<div style='font-weight:800;font-size:15px;color:#1a1a2e;margin-bottom:8px'>📋 {sel_disp}</div>",
             unsafe_allow_html=True
         )
         if not entries:
-            st.info("No tasks this day")
+            st.markdown(
+                "<div style='color:#aaa;font-size:13px;text-align:center;padding:8px'>No tasks this day</div>",
+                unsafe_allow_html=True
+            )
         else:
             for e in entries:
-                bg       = get_bg(e["category"])
-                fg       = get_fg(e["category"])
-                icon     = STATUS_ICONS.get(e["status"], "🔴")
-                time_str = f" ⏰ {e['time']}" if e.get("time") else ""
-                cat      = e["category"]
-                person   = e["person"]
-                task     = e["task"]
+                bg     = get_bg(e["category"])
+                fg     = get_fg(e["category"])
+                icon   = STATUS_ICONS.get(e["status"], "🔴")
+                tstr   = f" ⏰ {e['time']}" if e.get("time") else ""
+                cat    = e["category"]
+                person = e["person"]
+                task   = e["task"]
                 st.markdown(
                     f"<div style='background:{bg};color:{fg};padding:8px 12px;"
-                    f"border-radius:10px;margin:4px 0'>"
-                    f"<b>{icon} {person}</b> — {task}{time_str} "
+                    f"border-radius:10px;margin:4px 0;font-size:14px'>"
+                    f"<b>{icon} {person}</b> — {task}{tstr} "
                     f"<span style='font-size:11px;opacity:0.8'>[{cat}]</span></div>",
                     unsafe_allow_html=True
                 )
         st.markdown("</div>", unsafe_allow_html=True)
-        c_close, _ = st.columns([1, 4])
-        with c_close:
-            if st.button("✖ Close", key="close_day"):
-                st.session_state.selected_date = None
-                st.rerun()
 
-    # Legend
+    # ── Legend ──
+    st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
     st.markdown(
-        "<div class='scard'>"
-        "<div style='font-weight:700;font-size:13px;color:#555;margin-bottom:6px'>Category Colors</div>"
-        "<div class='legend'>" + "".join(cat_badge(c) for c in CATEGORIES) + "</div>"
+        "<div style='background:#fff;border-radius:14px;padding:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06)'>"
+        "<div style='font-weight:700;font-size:12px;color:#aaa;margin-bottom:6px;"
+        "text-transform:uppercase;letter-spacing:0.5px'>Categories</div>"
+        "<div style='display:flex;flex-wrap:wrap;gap:5px'>" + "".join(cat_badge(c) for c in CATEGORIES) + "</div>"
         "</div>",
         unsafe_allow_html=True
     )
